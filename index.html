@@ -1824,7 +1824,7 @@
             </p>
           </div>
           <p style="margin-top:24px;font-size:11px;color:#d8d0f2;letter-spacing:0.5px">Secure cloud-synced access across all devices</p>
-          <div style="display:flex;gap:8px;justify-content:center;align-items:center;margin-top:10px"><a href="https://gamepointsmanager.github.io/Game/about/" target="_blank" style="font-size:15px;color:#e0daf0;text-decoration:none;font-weight:500" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">About</a><span style="color:#555;font-size:11px">|</span><a href="https://gamepointsmanager.github.io/Game/terms/" target="_blank" style="font-size:15px;color:#e0daf0;text-decoration:none;font-weight:500" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">Terms of Use</a></div>
+          <div style="display:flex;gap:8px;justify-content:center;align-items:center;margin-top:10px"><a href="https://gamepointsmanager.github.io/About/index.html" target="_blank" style="font-size:15px;color:#e0daf0;text-decoration:none;font-weight:500" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">About</a><span style="color:#555;font-size:11px">|</span><a href="https://gamepointsmanager.github.io/Terms-of-Use/" target="_blank" style="font-size:15px;color:#e0daf0;text-decoration:none;font-weight:500" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">Terms of Use</a></div>
         </div>
       </div>`;
     }
@@ -5544,19 +5544,26 @@
             }).map(function(c) {
               var comp = companies.find(function(cc) { return cc._id === c[1].compId; });
               var compCredit = comp ? getCompanyCreditBalance(comp) : 0;
-              return '<div class="analytics-detail-item"><span style="flex:1;font-weight:600">' + esc(c[0]) + '</span><span style="color:#34d399;font-weight:700">Credit $' + compCredit.toFixed(2) + '</span></div>';
+              return '<div class="analytics-detail-item"><span style="flex:1;font-weight:600;color:var(--text)">' + esc(c[0]) + '</span><span style="color:#34d399;font-weight:700">Credit $' + compCredit.toFixed(2) + '</span></div>';
             }).join('');
-            creditRows = (hasCredit && hasOutstanding ? '<h4 style="font-family:Orbitron,monospace;font-size:11px;color:#34d399;margin:10px 0 6px">COMPANIES WITH CREDIT</h4>' : '') + creditComps;
+            creditRows = (hasCredit && hasOutstanding ? '<h4 style="font-family:Orbitron,monospace;font-size:11px;color:#34d399;margin:10px 0 6px">COMPANIES WITH CREDIT BALANCE</h4>' : '') + creditComps;
           }
           
           // Companies with outstanding
           if (hasOutstanding) {
             var outstandingComps = tC.filter(function(c) {
-              return c[1].due > 0;
+              var comp = companies.find(function(cc) { return cc._id === c[1].compId; });
+              if (!comp) return false;
+              var compBills = allBills.filter(function(b) { return b.companyId === c[1].compId; });
+              return compBills.reduce(function(s,b){return s+(b.balanceDue||0)},0) > 0;
             }).map(function(c) {
-              return '<div class="analytics-detail-item"><span style="flex:1;font-weight:600">' + esc(c[0]) + '</span><span style="color:#f472b6;font-weight:700">Due $' + c[1].due.toFixed(2) + '</span></div>';
+              var comp = companies.find(function(cc) { return cc._id === c[1].compId; });
+              if (!comp) return '';
+              var compBills = allBills.filter(function(b) { return b.companyId === c[1].compId; });
+              var due = compBills.reduce(function(s,b){return s+(b.balanceDue||0)},0);
+              return '<div class="analytics-detail-item"><span style="flex:1;font-weight:600;color:var(--text)">' + esc(c[0]) + '</span><span style="color:#f87171;font-weight:700">Due $' + due.toFixed(2) + '</span></div>';
             }).join('');
-            outstandingRows = (hasCredit && hasOutstanding ? '<h4 style="font-family:Orbitron,monospace;font-size:11px;color:#f472b6;margin:10px 0 6px">COMPANIES WITH OUTSTANDING</h4>' : '') + outstandingComps;
+            outstandingRows = (hasCredit && hasOutstanding ? '<h4 style="font-family:Orbitron,monospace;font-size:11px;color:#f87171;margin:10px 0 6px">COMPANIES WITH OUTSTANDING BALANCE</h4>' : '') + outstandingComps;
           }
           
           var rows = creditRows + outstandingRows;
@@ -5607,7 +5614,7 @@
         var bill=filtered[i]; var comp=companies.find(function(cc){return cc._id===bill.companyId});
         if (!comp) continue;
         var cn=comp.name||'Unknown';
-        if (!cM[cn]) cM[cn]={rev:0,pr:0,bills:0,pts:0,cost:0,cid:comp._id};
+        if (!cM[cn]) cM[cn]={rev:0,pr:0,bills:0,pts:0,cost:0,cid:comp._id,due:0};
         cM[cn].bills++;
         var _bdGA2=billToDate(bill.date);var dk=(!_bdGA2||isNaN(_bdGA2.getTime()))?'x':billToLocalDateKey(bill.date);
         if (!dM[dk]) dM[dk]={rev:0,pr:0,ld:0,rd:0};
@@ -5616,6 +5623,7 @@
         var bp=bill.paymentStatus==='received'?Math.max(0,_bFull-(bill.creditApplied||0)):(bill.paymentStatus==='partial'?Math.max(0,(bill.partialAmount||0)-(bill.creditApplied||0)):0);
         var ex=(bill.extraPayments||[]).reduce(function(s,p){return s+(p.amount||0)},0);
         gRv+=bp+ex; gBal+=(bill.balanceDue||0)-ex;
+        cM[cn].due+=Math.max(0,(bill.balanceDue||0));
         cM[cn].rev+=bd;
         for (var j=0; j<(bill.items||[]).length; j++) {
           var it=bill.items[j], pts=it.points||0, dol=Math.abs(it.dollars||0), absPts=Math.abs(pts);
@@ -5844,27 +5852,19 @@
             var comp=Object.values(state.companies).find(function(cc){return cc._id===c[1].cid});
             if(!comp)return '';
             var crBal=getCompanyCreditBalance(comp);
-            return '<div class="analytics-detail-item"><span style="flex:1;font-weight:600">'+esc(c[0])+'</span><span style="color:#34d399;font-weight:700">Credit $'+crBal.toFixed(2)+'</span></div>';
+            return '<div class="analytics-detail-item"><span style="flex:1;font-weight:600;color:var(--text)">'+esc(c[0])+'</span><span style="color:#34d399;font-weight:700">Credit $'+crBal.toFixed(2)+'</span></div>';
           }).join('');
-          creditRows = (hasCredit && hasOutstanding ? '<h4 style="font-family:Orbitron,monospace;font-size:11px;color:#34d399;margin:10px 0 6px">COMPANIES WITH CREDIT</h4>' : '') + creditCompanies;
+          creditRows = (hasCredit && hasOutstanding ? '<h4 style="font-family:Orbitron,monospace;font-size:11px;color:#34d399;margin:10px 0 6px">COMPANIES WITH CREDIT BALANCE</h4>' : '') + creditCompanies;
         }
         
         // Build outstanding companies list
         if (hasOutstanding) {
           var outstandingCompanies = d.tC.filter(function(c){
-            var comp=Object.values(state.companies).find(function(cc){return cc._id===c[1].cid});
-            if(!comp)return false;
-            var compBills=state.bills.filter(function(b){return b.companyId===c[1].cid});
-            var due=compBills.reduce(function(s,b){return s+(b.balanceDue||0)},0);
-            return due > 0;
+            return (c[1].due||0) > 0;
           }).map(function(c){
-            var comp=Object.values(state.companies).find(function(cc){return cc._id===c[1].cid});
-            if(!comp)return '';
-            var compBills=state.bills.filter(function(b){return b.companyId===c[1].cid});
-            var due=compBills.reduce(function(s,b){return s+(b.balanceDue||0)},0);
-            return '<div class="analytics-detail-item"><span style="flex:1;font-weight:600">'+esc(c[0])+'</span><span style="color:#f472b6;font-weight:700">Due $'+due.toFixed(2)+'</span></div>';
+            return '<div class="analytics-detail-item"><span style="flex:1;font-weight:600;color:var(--text)">'+esc(c[0])+'</span><span style="color:#f87171;font-weight:700">Due $'+(c[1].due||0).toFixed(2)+'</span></div>';
           }).join('');
-          outstandingRows = (hasCredit && hasOutstanding ? '<h4 style="font-family:Orbitron,monospace;font-size:11px;color:#f472b6;margin:10px 0 6px">COMPANIES WITH OUTSTANDING</h4>' : '') + outstandingCompanies;
+          outstandingRows = (hasCredit && hasOutstanding ? '<h4 style="font-family:Orbitron,monospace;font-size:11px;color:#f87171;margin:10px 0 6px">COMPANIES WITH OUTSTANDING BALANCE</h4>' : '') + outstandingCompanies;
         }
         
         rows = creditRows + outstandingRows;
