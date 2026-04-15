@@ -3755,10 +3755,14 @@
               }
             }
             // Save bill to Firestore — listener will update state.bills
-            // Note: credit deduction is tracked purely via creditApplied on the saved bill.
-            // getCompanyCreditBalance computes: sum(extraPayments) - sum(creditApplied across all bills).
-            // No need to modify source extraPayments — that would cause double-deduction.
             await db.collection(userPath()+'/bills').add(bill);
+            // If credit was applied, reduce company creditBalance
+            if(bill.creditApplied > 0){
+              var prevCrBal = typeof c.creditBalance==='number' ? c.creditBalance : getCompanyCreditBalance(c);
+              var newCrBal = parseFloat(Math.max(0, prevCrBal - bill.creditApplied).toFixed(2));
+              await db.doc(userPath()+'/companies/'+c._id).update({creditBalance:newCrBal});
+              if(state.companies[c._id]) state.companies[c._id].creditBalance = newCrBal;
+            }
             touchCompany(c._id);
             _lastSyncedTime = new Date();
             updateSyncIndicator();
@@ -4381,31 +4385,31 @@
       // Just re-render for simplicity with totals
     }
 
+    // ============================================================
+    // SINGLE SOURCE OF TRUTH: getCompanyFinancials(c)
+    // Returns { totalPaid, totalDue, creditBalance } computed the
+    // same way everywhere. Rule:
+    //   totalDue     = sum of bill.balanceDue (already reflects all payments applied)
+    //   totalPaid    = sum of payments[].amount (the payments sub-array on the company)
+    //   creditBalance= totalPaid - sum(bill.grandTotal for settled bills via payments)
+    //                = stored as c.creditBalance (updated atomically on every payment)
+    // We keep it simple: creditBalance is stored directly on the company document.
+    // ============================================================
     function getCompanyCreditBalance(c) {
-      // Credit = real money received beyond what bills needed.
-      // Sources: extraPayments that are NOT fromCredit (fromCredit = old internal transfer, legacy only).
-      // For isGeneral payments: if amountApplied is present, only (amount - amountApplied) is credit.
-      // Consumed by: creditApplied on bills (credit used at bill-save time).
-      var totalCredit = 0;
-      var totalConsumed = 0;
-      var compBills = state.bills.filter(function(b) { return b.companyId === c._id; });
+      // Use stored credit balance if present (set by applyPaymentToCompany)
+      if (typeof c.creditBalance === 'number') return Math.max(0, c.creditBalance);
+      // Fallback: derive from bills (for legacy data)
+      var totalExtra = 0, totalConsumed = 0;
+      var compBills = state.bills.filter(function(b){ return b.companyId === c._id; });
       for (var i = 0; i < compBills.length; i++) {
         var bill = compBills[i];
         var eps = bill.extraPayments || [];
         for (var j = 0; j < eps.length; j++) {
-          var ep = eps[j];
-          if (ep.fromCredit) continue; // legacy internal transfer, skip
-          var epAmt = ep.amount || 0;
-          if (ep.isGeneral && ep.amountApplied != null) {
-            // Only the leftover portion (not applied to clear bills) is available credit
-            totalCredit += Math.max(0, epAmt - ep.amountApplied);
-          } else {
-            totalCredit += epAmt;
-          }
+          if (!eps[j].fromCredit) totalExtra += (eps[j].amount || 0);
         }
         totalConsumed += (bill.creditApplied || 0);
       }
-      return Math.max(0, totalCredit - totalConsumed);
+      return Math.max(0, totalExtra - totalConsumed);
     }
 
     function generateBillText(c) {
@@ -4984,28 +4988,24 @@
         var bD=bill.totalDollars||0;
         var bFull=bD+(bill.extraFeeAmount||0);
         var _bCredit = bill.creditApplied || 0;
+        // Cash received on this bill = partialAmount minus credit portion (creditApplied)
         var bPaid = bill.paymentStatus==='received'
           ? Math.max(0, bFull - _bCredit)
           : (bill.paymentStatus==='partial' ? Math.max(0, (bill.partialAmount||0) - _bCredit) : 0);
-        // exP = all extraPayments for balance calc
-        // exReal = real money received via extra payments (not fromCredit internal transfers,
-        //          and for isGeneral payments with amountApplied, only the leftover credit portion
-        //          since the applied portion is already counted via bPaid on cleared bills)
-        var exP=0, exReal=0, exs=bill.extraPayments||[];
+        // Real extra payments recorded on this bill (payment history, NOT used for balance math)
+        var exReal=0, exs=bill.extraPayments||[];
         for(var ei=0;ei<exs.length;ei++){
-          var epAmt = exs[ei].amount||0;
-          exP += epAmt;
-          if(exs[ei].fromCredit) continue;
-          if(exs[ei].isGeneral && exs[ei].amountApplied != null){
-            // amountApplied portion already counted via bPaid on the cleared bills
-            exReal += Math.max(0, epAmt - exs[ei].amountApplied);
-          } else {
-            exReal += epAmt;
-          }
+          // Only count real external money — skip fromCredit (legacy internal transfers)
+          // and isGeneral entries whose purpose is only credit storage (already counted via bPaid on cleared bills)
+          var ep=exs[ei];
+          if(ep.fromCredit) continue;
+          if(ep.isGeneral) continue; // isGeneral = general company payment, counted via cleared bills' bPaid
+          exReal += (ep.amount||0);
         }
         var thisRec = bPaid + exReal; tRec += thisRec;
-        var rawBal=(bill.balanceDue||0);
-        var adjBal=rawBal>0?Math.max(0,rawBal-exP):rawBal; tBal+=adjBal;
+        // balanceDue IS the true remaining amount — do NOT subtract extraPayments again
+        var adjBal = Math.max(0, bill.balanceDue||0);
+        tBal += adjBal;
         rcDet.push({date:bill.date,amount:thisRec,billTotal:bD,status:bill.paymentStatus,extraPayments:exs,billId:bill._id,adjBalance:adjBal});
         if(adjBal!==0)blDet.push({date:bill.date,amount:adjBal,billTotal:bD,paid:thisRec,billId:bill._id});
         for(var ii=0;ii<(bill.items||[]).length;ii++){
@@ -5044,16 +5044,11 @@
       var gNm=Object.keys(gMap).sort(function(a,b){return gMap[b].rev-gMap[a].rev});
       var gRv=gNm.map(function(g){return +gMap[g].rev.toFixed(2)});
       console.log('[Analytics] loaded:'+tLP+' redeemed:'+tRP+' recv:$'+tRec.toFixed(2)+' bal:$'+tBal.toFixed(2)+' bills:'+compBills.length);
-      // Use getCompanyCreditBalance as the single source of truth for credit balance
+      // Credit balance: use getCompanyCreditBalance as single source of truth
       var _trueCreditBal = getCompanyCreditBalance(c);
-      // The summary card shows credit when balance is negative.
-      // If there is genuine outstanding balance (tBal > 0) AND credit exists, credit offsets it.
-      // If all bills are settled (tBal <= 0) and credit exists, show credit as negative balance.
-      if (_trueCreditBal > 0) {
-        // Credit offsets any outstanding balance; remainder shown as credit
-        var netAfterCredit = tBal - _trueCreditBal;
-        tBal = netAfterCredit; // negative = credit, positive = still owed
-      }
+      // tBal = total outstanding across all bills in range
+      // Net: credit offsets outstanding. Negative result = net credit available.
+      tBal = tBal - _trueCreditBal;
       var r={totalLoadedPts:tLP,totalLoadedDollars:tLD,totalRedeemedPts:tRP,totalRedeemedDollars:tRD,totalReceived:tRec,totalBalance:tBal,totalProfit:tPr,totalCost:tCo,billCount:compBills.length,dailyLabels:dLab,dailyRevenue:dRev,dailyProfit:dPr,dailyLoaded:dLd,dailyRedeemed:dRd,gameNames:gNm,gameRevenues:gRv,gameMap:gMap,loadedDetails:ldDet,redeemedDetails:rdDet,receivedDetails:rcDet,balanceDetails:blDet,profitDetails:prDet,compBills:compBills};
       _analyticsCache[key]=r; return r;
     }
@@ -5401,70 +5396,94 @@
         try{
           if(bid==='__general__'){
             var payDate = dt || new Date().toISOString().slice(0,10);
-            var latestBill = d.compBills[0]; // already sorted newest first
+            // Get ALL unpaid bills for this company (not just in date range), oldest first
+            var allCompBills = state.bills.filter(function(b){ return b.companyId===c._id; })
+              .sort(function(a,b){ return new Date(a.date)-new Date(b.date); });
+            var unpaidBills = allCompBills.filter(function(b){ return (b.balanceDue||0) > 0.01; });
 
-            if(!latestBill || !latestBill._id){
-              // No bills yet — create a payment-only holder bill
+            if(allCompBills.length===0){
+              // No bills at all — create a holder bill to record the payment
               var payBill={companyId:c._id,companyName:c.name,date:new Date().toISOString(),convMode:'pts2dollar',items:[],totalDollars:0,totalPoints:0,paymentStatus:'received',partialAmount:0,balanceDue:0,extraPayments:[{amount:amt,date:payDate,isGeneral:true}]};
               await trackedWrite(function(){return db.collection(userPath()+'/bills').add(payBill)});
+              // Update company creditBalance
+              await trackedWrite(function(){return db.doc(userPath()+'/companies/'+c._id).update({creditBalance: Math.max(0,(c.creditBalance||0)+amt)})});
+              if(state.companies[c._id]) state.companies[c._id].creditBalance = Math.max(0,(c.creditBalance||0)+amt);
             } else {
-              // Step 1: Calculate total amount needed to clear unpaid bills first
-              var unpaidBills = d.compBills.filter(function(b){
-                return b._id !== latestBill._id && (b.balanceDue||0) > 0.01;
-              }).sort(function(a,b){ return new Date(a.date)-new Date(b.date); });
+              var remaining = amt;
 
-              var totalToApply = 0;
-              for(var ub=0; ub<unpaidBills.length; ub++){
-                totalToApply += Math.min(unpaidBills[ub].balanceDue||0, amt - totalToApply);
-                if(totalToApply >= amt) break;
-              }
-              var leftoverCredit = Math.max(0, amt - totalToApply);
-
-              // Step 2: Store FULL payment as single isGeneral extraPayment on latest bill.
-              // Record amountApplied so credit balance formula can subtract it.
-              var ref2=db.doc(userPath()+'/bills/'+latestBill._id);
-              var sn2=await ref2.get();
-              var ep2=(sn2.data().extraPayments||[]);
-              ep2.push({amount:amt, date:payDate, isGeneral:true, amountApplied: parseFloat((amt - leftoverCredit).toFixed(2))});
-              await trackedWrite(function(){return ref2.update({extraPayments:ep2})});
-              var lb3=state.bills.find(function(bb){return bb._id===latestBill._id});
-              if(lb3){lb3.extraPayments=ep2;}
-
-              // Step 3: Apply credit to unpaid bills oldest-first — update status/balanceDue only.
-              var creditRemaining = amt;
-              for(var ubi=0; ubi<unpaidBills.length && creditRemaining>0.01; ubi++){
+              // Apply payment to each unpaid bill oldest-first
+              for(var ubi=0; ubi<unpaidBills.length && remaining>0.001; ubi++){
                 var ubill = unpaidBills[ubi];
+                // Fetch fresh from Firestore to avoid stale data
                 var uref = db.doc(userPath()+'/bills/'+ubill._id);
-                var usn = await uref.get();
-                var udata = usn.data();
-                var udue = udata.balanceDue||0;
-                if(udue > 0.01){
-                  var uupdates = {};
-                  if(creditRemaining >= udue - 0.01){
-                    uupdates.paymentStatus = 'received';
-                    uupdates.balanceDue = 0;
-                    uupdates.partialAmount = (udata.totalDollars||0)+(udata.extraFeeAmount||0);
-                    creditRemaining -= udue;
-                  } else {
-                    uupdates.paymentStatus = 'partial';
-                    uupdates.balanceDue = Math.max(0, udue - creditRemaining);
-                    uupdates.partialAmount = (udata.partialAmount||0) + creditRemaining;
-                    creditRemaining = 0;
-                  }
-                  await trackedWrite(function(){return uref.update(uupdates)});
-                  var lbU=state.bills.find(function(bb){return bb._id===ubill._id});
-                  if(lbU){Object.assign(lbU,uupdates);}
-                }
+                var usn = await uref.get(); var udata = usn.data();
+                var uDue = udata.balanceDue||0;
+                if(uDue <= 0.001) continue;
+
+                var applyAmt = Math.min(remaining, uDue);
+                var newDue = parseFloat((uDue - applyAmt).toFixed(2));
+                var uupdates = { balanceDue: newDue };
+                uupdates.paymentStatus = newDue <= 0.001 ? 'received' : 'partial';
+                // partialAmount = total actually paid toward this bill's grand total
+                var grandTotal = (udata.totalDollars||0)+(udata.extraFeeAmount||0);
+                uupdates.partialAmount = parseFloat((grandTotal - newDue).toFixed(2));
+                // Store payment record for history display
+                var uep = (udata.extraPayments||[]);
+                uep.push({amount:parseFloat(applyAmt.toFixed(2)), date:payDate, isGeneral:true});
+                uupdates.extraPayments = uep;
+
+                await trackedWrite(function(){return uref.update(uupdates)});
+                // Update local state immediately
+                var lbU=state.bills.find(function(bb){return bb._id===ubill._id});
+                if(lbU){Object.assign(lbU,uupdates);}
+                remaining -= applyAmt;
               }
+
+              // Remaining amount after clearing all bills = new credit
+              var newCredit = parseFloat((Math.max(0, remaining)).toFixed(2));
+              var prevCredit = typeof c.creditBalance==='number' ? c.creditBalance : 0;
+              var totalCredit = parseFloat((prevCredit + newCredit).toFixed(2));
+
+              // If there's leftover credit, record it on the newest bill for visibility
+              if(newCredit > 0.001){
+                var newestBill = allCompBills[allCompBills.length-1]; // oldest-first sorted, so last = newest
+                // Actually we sorted oldest-first, newest is last element
+                var nbRef = db.doc(userPath()+'/bills/'+newestBill._id);
+                var nbSnap = await nbRef.get(); var nbData = nbSnap.data();
+                var nbEp = (nbData.extraPayments||[]);
+                nbEp.push({amount:newCredit, date:payDate, isGeneral:true, isCredit:true});
+                await trackedWrite(function(){return nbRef.update({extraPayments:nbEp})});
+                var lbN=state.bills.find(function(bb){return bb._id===newestBill._id});
+                if(lbN){lbN.extraPayments=nbEp;}
+              }
+
+              // Update company creditBalance — single source of truth
+              await trackedWrite(function(){return db.doc(userPath()+'/companies/'+c._id).update({creditBalance: totalCredit})});
+              if(state.companies[c._id]) state.companies[c._id].creditBalance = totalCredit;
             }
           } else {
-            var ref=db.doc(userPath()+'/bills/'+bid);var sn=await ref.get();var bData=sn.data();var ep=(bData.extraPayments||[]);ep.push({amount:amt,date:dt||new Date().toISOString().slice(0,10)});
-            var totalExP=ep.reduce(function(s2,p2){return s2+(p2.amount||0)},0);
-            var updates2={extraPayments:ep};
-            var remaining=(bData.balanceDue||0)-totalExP;
-            if(remaining<=0){updates2.paymentStatus='received';updates2.balanceDue=0}
-            else{updates2.paymentStatus='partial'}
+            var ref=db.doc(userPath()+'/bills/'+bid);
+            var sn=await ref.get(); var bData=sn.data();
+            var ep=(bData.extraPayments||[]);
+            var payDate2=dt||new Date().toISOString().slice(0,10);
+            ep.push({amount:amt,date:payDate2});
+            var curDue = bData.balanceDue||0;
+            var newDue2 = parseFloat(Math.max(0, curDue - amt).toFixed(2));
+            var updates2={extraPayments:ep, balanceDue:newDue2};
+            updates2.paymentStatus = newDue2 <= 0.001 ? 'received' : 'partial';
+            var grandTotal2=(bData.totalDollars||0)+(bData.extraFeeAmount||0);
+            updates2.partialAmount = parseFloat((grandTotal2 - newDue2).toFixed(2));
             await trackedWrite(function(){return ref.update(updates2)});
+            var lb4=state.bills.find(function(bb){return bb._id===bid});
+            if(lb4){Object.assign(lb4,updates2);}
+            // If payment exceeded balance, remainder is credit
+            var overpay = parseFloat(Math.max(0, amt - curDue).toFixed(2));
+            if(overpay > 0.001){
+              var prevCr = typeof c.creditBalance==='number' ? c.creditBalance : 0;
+              var newCr = parseFloat((prevCr + overpay).toFixed(2));
+              await trackedWrite(function(){return db.doc(userPath()+'/companies/'+c._id).update({creditBalance:newCr})});
+              if(state.companies[c._id]) state.companies[c._id].creditBalance = newCr;
+            }
           }
           invalidateAnalyticsCache();
           _gbCache.set('data', {mg:state.masterGames, bills:state.bills, companies:state.companies});
@@ -5522,19 +5541,25 @@
         }
       }
       
-      // Calculate credit and outstanding using SAME logic as individual company analytics
-      // Also update cM with correct per-company credit/due values
+      // Calculate credit and outstanding using SAME source of truth as company analytics:
+      // - outstanding = sum of bill.balanceDue across all bills (no date filter — balance is global)
+      // - credit = getCompanyCreditBalance per company (reads c.creditBalance if set, else legacy calc)
+      // Reset gDue (was accumulated in bill loop above) and recompute cleanly
+      gDue = 0;
+      gCredit = 0;
       companies.forEach(function(cc) {
-        var compData = computeAnalyticsData(cc, null, null);
-        var bal = compData.totalBalance;
         var cn = cc.name || 'Unknown';
-        if (bal < 0) {
-          gCredit += Math.abs(bal);
-          if (cM[cn]) { cM[cn].credit = Math.abs(bal); cM[cn].due = 0; }
-        } else if (bal > 0) {
-          gDue += bal;
-          if (cM[cn]) { cM[cn].due = bal; cM[cn].credit = 0; }
-        }
+        // Outstanding: sum balanceDue across all this company's bills
+        var compDue = 0;
+        state.bills.filter(function(b){ return b.companyId===cc._id; }).forEach(function(b){ compDue += Math.max(0, b.balanceDue||0); });
+        // Credit: single source of truth
+        var compCredit = getCompanyCreditBalance(cc);
+        // Net: credit offsets outstanding
+        var netDue = Math.max(0, compDue - compCredit);
+        var netCredit = Math.max(0, compCredit - compDue);
+        gDue += netDue;
+        gCredit += netCredit;
+        if(cM[cn]){ cM[cn].due = netDue; cM[cn].credit = netCredit; }
       });
       
       var tC = Object.entries(cM).sort(function(a, b) { return b[1].rev - a[1].rev; });
@@ -5711,27 +5736,21 @@
       var tG=Object.entries(gM).sort(function(a,b){return b[1].rev-a[1].rev});
       var tU=Object.values(uM).sort(function(a,b){return b.pts-a.pts});
       var dPts=dLab.map(function(k){return (aggMap[k]||{ld:0,rd:0}).ld+(aggMap[k]||{ld:0,rd:0}).rd});
-      // Track BOTH credit and outstanding separately using the SAME logic as individual company analytics
-      // computeAnalyticsData returns totalBalance: negative = credit available, positive = outstanding
+      // Credit and outstanding: use SAME source of truth as company analytics
+      // balanceDue = true remaining per bill; creditBalance = stored on company doc
       var _globalCreditTotal = 0;
       var _globalOutstandingTotal = 0;
       companies.forEach(function(cc) {
-        var compData = computeAnalyticsData(cc, fromDate, toDate);
-        var bal = compData.totalBalance;
-        if (bal < 0) {
-          // Negative balance = credit available for this company
-          _globalCreditTotal += Math.abs(bal);
-          // Also add to cM so detail modal can show it
-          var cn2 = cc.name || 'Unknown';
-          if (cM[cn2]) { cM[cn2].credit = Math.abs(bal); }
-        } else if (bal > 0) {
-          // Positive balance = outstanding for this company
-          _globalOutstandingTotal += bal;
-          var cn2 = cc.name || 'Unknown';
-          if (cM[cn2]) { cM[cn2].due = bal; }
-        }
+        var cn2 = cc.name || 'Unknown';
+        var compDue = 0;
+        state.bills.filter(function(b){ return b.companyId===cc._id; }).forEach(function(b){ compDue += Math.max(0, b.balanceDue||0); });
+        var compCredit = getCompanyCreditBalance(cc);
+        var netDue = Math.max(0, compDue - compCredit);
+        var netCredit = Math.max(0, compCredit - compDue);
+        _globalOutstandingTotal += netDue;
+        _globalCreditTotal += netCredit;
+        if (cM[cn2]) { cM[cn2].due = netDue; cM[cn2].credit = netCredit; }
       });
-      // Net balance for backwards compatibility
       var gBalNet = _globalOutstandingTotal - _globalCreditTotal;
       return {gL:gL,gR:gR,gRv:gRv,gBal:gBalNet,gCredit:_globalCreditTotal,gOutstanding:_globalOutstandingTotal,gPr:gPr,gCost:gCost,tC:tC,tG:tG,tU:tU,dLab:dLab,dRev:dRev,dPr:dPr,dPts:dPts,bills:filtered.length,totalDol:filtered.reduce(function(s,b){return s+(b.totalDollars||0)},0)};
     }
