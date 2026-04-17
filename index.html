@@ -4213,9 +4213,9 @@
           const ef = b.extraFeeAmount || 0;
           const cr = b.creditApplied || 0;
           const gt = (b.totalDollars||0) + ef;
-          const ex = (b.extraPayments||[]).reduce((s,p)=>s+(p.amount||0),0);
-          // FIXED: Cash received should be the total amount paid (partialAmount or grand total for received)
-          // partialAmount already includes both credit and cash combined
+          // Only count isCredit:true extraPayments (standalone credit additions not tied to bill balance).
+          // isGeneral:true and plain extraPayments are already reflected in partialAmount/savedCash.
+          const ex = (b.extraPayments||[]).reduce((s,p)=>s+((p.isCredit&&!p.isGeneral)?(p.amount||0):0),0);
           // For "received" status, the customer paid the full amount (credit was applied as part of payment)
           var savedCash = b.paymentStatus==='received' ? gt
             : b.paymentStatus==='partial' ? (b.partialAmount||0)
@@ -4224,7 +4224,7 @@
           summaryExtraFee    += ef;
           summaryTotalCredit += cr;
           totalReceived      += savedCash + ex;
-          totalBalance       += Math.max(0, b.balanceDue||0) - ex;
+          totalBalance       += Math.max(0, b.balanceDue||0);
         });
         // Remaining credit = current live balance (what's still available after all bills)
         summaryRemainingCredit = getCompanyCreditBalance(comp);
@@ -5492,9 +5492,74 @@
 
     function showPaymentDetailModal(c,d){document.getElementById('paymentRecordModal')?.remove();var obs=d.compBills.filter(function(b){return true});var opts=obs.map(function(b){var ex=(b.extraPayments||[]).reduce(function(s,p){return s+(p.amount||0)},0);var rem=(b.balanceDue||0)-ex;return '<option value="'+b._id+'">'+billToDate(b.date).toLocaleDateString('en-US',{month:'short',day:'numeric'})+' — '+(rem>0?'Bal: $'+rem.toFixed(2):rem<0?'Credit: $'+Math.abs(rem).toFixed(2):'Paid')+'</option>'}).join('');opts = '<option value="__general__">General Company Payment</option>' + opts;
       if(!opts)opts='<option value="__general__">General Company Payment</option>';
-      var creditBal=d.totalBalance<0?Math.abs(d.totalBalance):0;
-      var hist=[];d.receivedDetails.forEach(function(r){if(r.amount>0)hist.push({date:r.date,amount:r.amount,status:r.status,extra:false});(r.extraPayments||[]).forEach(function(ep,epi){hist.push({date:ep.date,amount:ep.amount,status:'extra',billDate:r.date,extra:true,billId:r.billId,payIdx:epi})})});hist.sort(function(a,b){return toLocalDate(b.date)-toLocalDate(a.date)});
-      var tg2=function(t,c2){return '<span class="ad-tag" style="background:rgba(0,0,0,0.2);color:'+c2+'">'+t+'</span>'};var hH=hist.length?hist.map(function(h,hi){var st=h.extra?tg2('EXTRA','#22d3ee'):h.status==='received'?tg2('FULL','#34d399'):tg2('PARTIAL','#fbbf24');return '<div class="analytics-detail-item" style="padding:8px 10px;font-size:12px"><span style="color:var(--green);font-weight:700;min-width:55px">$'+h.amount.toFixed(2)+'</span>'+st+(h.billDate?'<span style="color:var(--textMuted);font-size:10px">for '+toLocalDate(h.billDate).toLocaleDateString()+'</span>':'')+'<span style="color:var(--textMuted);font-size:10px;margin-left:auto">'+toLocalDate(h.date).toLocaleDateString()+'</span>'+(h.extra&&h.billId?'<button class="pay-edit-btn btn btn-ghost btn-sm" data-billid="'+h.billId+'" data-payidx="'+h.payIdx+'" data-amt="'+h.amount+'" data-date="'+h.date+'" style="color:#a78bfa;padding:1px 3px;margin-left:4px" onclick="event.stopPropagation()"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.85 2.85 0 114 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg></button><button class="pay-del-btn btn btn-ghost btn-sm" data-billid="'+h.billId+'" data-payidx="'+h.payIdx+'" style="color:var(--red);padding:1px 3px" onclick="event.stopPropagation()"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6"/></svg></button>':'')+'</div>'}).join(''):'<div style="padding:14px;text-align:center;color:var(--textMuted);font-size:12px">No payments yet</div>';
+      var creditBal=getCompanyCreditBalance(c)||0;
+      // Build history: show bill payments and only standalone credit additions (isCredit:true).
+      // isGeneral:true entries are general payments already reflected in the bill's partialAmount/
+      // paymentStatus — do NOT show them as separate EXTRA rows to avoid double-counting in the view.
+      // Compute running general-payment credit pool (total general payments minus amounts applied to bills)
+      // so each bill row can show the remaining credit pool after that bill was covered.
+      var _allCompBillsSorted = d.compBills.slice().sort(function(a,b){return toLocalDate(a.date)-toLocalDate(b.date)});
+      // Sum all general (isGeneral) payments recorded across all bills
+      var _totalGeneralPaid = 0;
+      _allCompBillsSorted.forEach(function(b){(b.extraPayments||[]).forEach(function(ep){if(ep.isGeneral)_totalGeneralPaid+=(ep.amount||0);});});
+      // Walk bills oldest-first to compute running credit remaining after each bill is covered by general payments
+      var _genCreditPool = _totalGeneralPaid;
+      var _billGeneralCredit = {}; // billId -> credit pool AFTER that bill was paid
+      _allCompBillsSorted.forEach(function(b){
+        var _genOnBill = (b.extraPayments||[]).filter(function(ep){return ep.isGeneral;}).reduce(function(s,ep){return s+(ep.amount||0);},0);
+        // The general payment applied to this bill is the amount that reduced its balanceDue (reflected in partialAmount)
+        var _gt = (b.totalDollars||0)+(b.extraFeeAmount||0);
+        var _paid = b.paymentStatus==='received'?_gt:(b.paymentStatus==='partial'?(b.partialAmount||0):0);
+        var _creditApplied = b.creditApplied||0;
+        var _cashPaid = Math.max(0,_paid-_creditApplied);
+        // Deduct what was actually applied to this bill from the pool
+        // (use the isGeneral sum on this bill as the applied portion from the pool)
+        _genCreditPool -= _genOnBill;
+        _billGeneralCredit[b._id] = Math.max(0, _genCreditPool);
+      });
+      var hist=[];d.receivedDetails.forEach(function(r){
+        if(r.amount>0)hist.push({date:r.date,amount:r.amount,status:r.status,extra:false,billId:r.billId,creditAfter:_billGeneralCredit[r.billId]});
+        (r.extraPayments||[]).forEach(function(ep,epi){
+          // Only show isCredit:true entries (standalone credit additions) — skip isGeneral entries
+          if(ep.isGeneral) return;
+          hist.push({date:ep.date,amount:ep.amount,status:'extra',billDate:r.date,extra:true,billId:r.billId,payIdx:epi,isCredit:ep.isCredit});
+        });
+      });hist.sort(function(a,b){return toLocalDate(b.date)-toLocalDate(a.date)});
+      var tg2=function(t,c2){return '<span class="ad-tag" style="background:rgba(0,0,0,0.2);color:'+c2+'">'+t+'</span>'};
+      // Pre-sort hist oldest→newest to compute running credit column, then display newest→oldest
+      var histChron=hist.slice().sort(function(a,b){return toLocalDate(a.date)-toLocalDate(b.date)});
+      // Running credit pool shown per row: starts at _totalGeneralPaid, decreases as bills consume it
+      var _runCredit = _totalGeneralPaid;
+      var _histCreditAfter = {}; // index in histChron → remaining credit after this row
+      histChron.forEach(function(h,i){
+        if(!h.extra){
+          // A bill payment row: deduct the isGeneral amounts on this bill from the pool
+          var _genUsed = 0;
+          (d.compBills.find(function(b){return b._id===h.billId})||{extraPayments:[]}).extraPayments.forEach(function(ep){if(ep.isGeneral)_genUsed+=(ep.amount||0);});
+          _runCredit = Math.max(0, _runCredit - _genUsed);
+        } else if(h.isCredit){
+          // Standalone credit addition: pool grows
+          _runCredit += h.amount;
+        }
+        _histCreditAfter[i] = _runCredit;
+      });
+      // Build display map keyed by hist index in the sorted (newest→oldest) display order
+      // We need to map from display hist[] indices back to the chrono credit values
+      // Rebuild: assign _creditAfter to each hist item by matching billId+date
+      var _histDisplay = hist; // already sorted newest→oldest for display
+      // Assign credit-after from chrono pass to each display item
+      _histDisplay.forEach(function(h){
+        if(!h.extra && h.billId !== undefined){
+          h._creditAfter = _billGeneralCredit[h.billId];
+        }
+      });
+      var hH=hist.length?hist.map(function(h,hi){
+        var st=h.extra?tg2('CREDIT','#22d3ee'):h.status==='received'?tg2('FULL','#34d399'):tg2('PARTIAL','#fbbf24');
+        var creditHint = (!h.extra && _totalGeneralPaid > 0 && h._creditAfter !== undefined)
+          ? '<span style="color:#a78bfa;font-size:9px;margin-left:4px">pool→$'+h._creditAfter.toFixed(2)+'</span>'
+          : '';
+        return '<div class="analytics-detail-item" style="padding:8px 10px;font-size:12px"><span style="color:var(--green);font-weight:700;min-width:55px">$'+h.amount.toFixed(2)+'</span>'+st+(h.billDate?'<span style="color:var(--textMuted);font-size:10px">for '+toLocalDate(h.billDate).toLocaleDateString()+'</span>':'')+creditHint+'<span style="color:var(--textMuted);font-size:10px;margin-left:auto">'+toLocalDate(h.date).toLocaleDateString()+'</span>'+(h.extra&&h.billId?'<button class="pay-edit-btn btn btn-ghost btn-sm" data-billid="'+h.billId+'" data-payidx="'+h.payIdx+'" data-amt="'+h.amount+'" data-date="'+h.date+'" style="color:#a78bfa;padding:1px 3px;margin-left:4px" onclick="event.stopPropagation()"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.85 2.85 0 114 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg></button><button class="pay-del-btn btn btn-ghost btn-sm" data-billid="'+h.billId+'" data-payidx="'+h.payIdx+'" style="color:var(--red);padding:1px 3px" onclick="event.stopPropagation()"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6"/></svg></button>':'')+'</div>';
+      }).join(''):'<div style="padding:14px;text-align:center;color:var(--textMuted);font-size:12px">No payments yet</div>';
       var ov=document.createElement('div');ov.className='modal-overlay';ov.id='paymentRecordModal';ov.innerHTML='<div class="modal fade-in" style="max-width:480px"><div class="modal-header"><h3 class="modal-title">PAYMENTS</h3><button class="btn btn-ghost btn-sm" id="closePayM"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div style="display:flex;gap:10px;padding:14px;border-radius:12px;background:rgba(16,185,129,0.06);border:1px solid rgba(16,185,129,0.12);margin-bottom:14px;flex-wrap:wrap"><div style="flex:1;text-align:center;min-width:80px"><div style="font-size:10px;color:#22d3ee;text-transform:uppercase;font-weight:700;margin-bottom:2px">Received</div><div style="font-size:18px;font-weight:800;color:#34d399;font-family:Orbitron,monospace">$'+d.totalReceived.toFixed(2)+'</div></div><div style="width:1px;background:rgba(120,100,200,0.12)"></div><div style="flex:1;text-align:center;min-width:80px"><div style="font-size:10px;color:'+(d.totalBalance>0?'#f472b6':'#34d399')+';text-transform:uppercase;font-weight:700;margin-bottom:2px">'+(d.totalBalance<0?'Credit':'Balance')+'</div><div style="font-size:18px;font-weight:800;color:'+(d.totalBalance>0?'#f472b6':'#34d399')+';font-family:Orbitron,monospace">'+'$'+Math.abs(d.totalBalance).toFixed(2)+'</div></div>'+(d.totalRedeemedDollars>0?'<div style="width:100%;padding:6px 10px;border-radius:8px;background:rgba(245,158,11,0.06);border:1px solid rgba(245,158,11,0.1);font-size:11px;display:flex;justify-content:space-between"><span style="color:#fbbf24;font-weight:600">Redeemed Value</span><span style="color:#fbbf24;font-weight:700">$'+d.totalRedeemedDollars.toFixed(2)+'</span></div><div style="width:100%;padding:4px 10px;font-size:11px;display:flex;justify-content:space-between"><span style="color:var(--textMuted)">Net Received</span><span style="color:#22d3ee;font-weight:700">$'+(d.totalReceived-d.totalRedeemedDollars).toFixed(2)+'</span></div>':'')+'</div>'+(creditBal>0?'<div style="padding:10px 14px;border-radius:10px;background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.2);margin-bottom:14px;display:flex;align-items:center;gap:8px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22,4 12,14.01 9,11.01"/></svg><span style="font-size:12px;color:#34d399;font-weight:700">Available Credit: $'+creditBal.toFixed(2)+'</span><span style="font-size:10px;color:var(--textMuted);margin-left:auto">Auto-applied to future bills</span></div>':'')+'<div style="margin-bottom:14px"><h4 style="font-family:Orbitron,monospace;font-size:11px;color:var(--textSecondary);margin-bottom:8px">RECORD PAYMENT</h4><div style="margin-bottom:8px"><span class="label" style="font-size:9px">Bill</span><select class="input styled-select" id="payBill" style="font-size:12px;background-color:var(--bgInput)">'+opts+'</select></div><div style="display:flex;gap:8px"><div style="flex:1"><span class="label" style="font-size:9px">Amount ($)</span><input class="input" type="number" id="payAmt" placeholder="0.00" step="0.01" min="0"/></div><div style="flex:1"><span class="label" style="font-size:9px">Date</span><input class="input" type="date" id="payDt" value="'+new Date().toISOString().slice(0,10)+'"/></div></div><button class="btn btn-green btn-full btn-sm" id="paySave" style="margin-top:10px;justify-content:center"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20,6 9,17 4,12"/></svg> Record</button></div><h4 style="font-family:Orbitron,monospace;font-size:11px;color:var(--textSecondary);margin-bottom:6px">HISTORY</h4><div style="max-height:200px;overflow-y:auto;border-radius:10px;background:rgba(15,12,28,0.4);border:1px solid rgba(120,100,200,0.08)">'+hH+'</div></div>';
       document.body.appendChild(ov);ov.onclick=function(e){if(e.target===ov)ov.remove()};document.getElementById('closePayM').onclick=function(){ov.remove()};
       ov.querySelectorAll('.pay-edit-btn').forEach(function(eb){eb.onclick=function(){
@@ -5647,11 +5712,7 @@
         if (!dM[dk]) dM[dk] = { rev: 0, pr: 0 };
         
         var bd = bill.totalDollars || 0;
-        var bp = bill.paymentStatus === 'received' ? Math.max(0, (bd + (bill.extraFeeAmount || 0)) - (bill.creditApplied || 0)) : 
-                 (bill.paymentStatus === 'partial' ? Math.max(0, (bill.partialAmount || 0) - (bill.creditApplied || 0)) : 0);
-        var ex = (bill.extraPayments || []).reduce(function(s, p) { return s + (p.amount || 0); }, 0);
-        
-        gRv += bp + ex;
+        // gRv is now accumulated per-company via computeAnalyticsData below — skip here
         var billDue = Math.max(0, bill.balanceDue || 0);
         gDue += billDue;
         cM[cn].due += billDue;
@@ -5681,11 +5742,16 @@
       // Calculate credit and outstanding using SAME source of truth as company analytics:
       // - outstanding = sum of bill.balanceDue across all bills (no date filter — balance is global)
       // - credit = getCompanyCreditBalance per company (reads c.creditBalance if set, else legacy calc)
+      // gRv: use computeAnalyticsData totalReceived per company — same correct formula as company analytics card
+      gRv = 0;
       // Reset gDue (was accumulated in bill loop above) and recompute cleanly
       gDue = 0;
       gCredit = 0;
       companies.forEach(function(cc) {
         var cn = cc.name || 'Unknown';
+        // Accumulate correct received total from per-company analytics (same source as company card)
+        var _compData = computeAnalyticsData(cc);
+        gRv += _compData ? (_compData.totalReceived || 0) : 0;
         // Outstanding: sum balanceDue across all this company's bills
         var compDue = 0;
         state.bills.filter(function(b){ return b.companyId===cc._id; }).forEach(function(b){ compDue += Math.max(0, b.balanceDue||0); });
