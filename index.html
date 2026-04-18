@@ -4667,12 +4667,14 @@
         const calc = calcLine(item);
         totalPts += safeNum(calc.points); totalDollars += safeNum(calc.dollars);
         const costRate = safeNum(getCostRate(item.gameName));
+        const sellRate = safeNum(getGameRate(c, item.gameName) || 0);
         return {
           gameName: item.gameName || '',
           gameId: item.gameId || '',
           username: item.username || '',
           value: safeNum(parseFloat(item.value)),
           costRate: costRate,
+          sellRate: sellRate,
           points: safeNum(calc.points),
           dollars: safeNum(calc.dollars),
           inputAmount: safeNum(calc.inputAmount),
@@ -5218,7 +5220,8 @@
           var it=bill.items[ii],pts=it.points||0,dol=Math.abs(it.dollars||0);
           if(pts===0&&dol===0)continue;
           var absPts=Math.abs(pts);
-          var sR=getGameRate(c,it.gameName)||0,cR=getCostRate(it.gameName);
+          var sR=(it.sellRate!=null?it.sellRate:null);if(sR===null)sR=getGameRate(c,it.gameName)||0;
+          var cR=(it.costRate!=null?it.costRate:null);if(cR===null)cR=getCostRate(it.gameName);
           var sp=absPts*(sR/100),cp=absPts*(cR/100),lvl=getUserLevel(c,it.username,it.gameName);
           var det={date:bill.date,gameName:it.gameName,username:it.username,points:absPts,dollars:dol,level:lvl,rawPoints:pts,sellRate:sR,costRate:cR,profit:sp-cp};
           // SIGN of points determines: positive = LOAD, negative = REDEEM
