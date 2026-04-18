@@ -2305,7 +2305,16 @@
     }
 
     async function doExport() {
-      const data = { masterGames: state.masterGames, companies: state.companies, bills: state.bills };
+      const invoiceSettings = getInvoiceSettings();
+      const data = {
+        masterGames: state.masterGames,
+        companies: state.companies,
+        bills: state.bills,
+        gbUsername: state.gbUsername || '',
+        companyLastUsed: state.companyLastUsed || {},
+        analyticsAgg: state.analyticsAgg || 'D',
+        invoiceSettings: invoiceSettings || {}
+      };
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
@@ -2405,6 +2414,35 @@
                 await db.collection(`${userPath()}/bills`).add(billRest);
               }
             }
+          }
+
+          // Restore invoice settings
+          if (data.invoiceSettings && Object.keys(data.invoiceSettings).length > 0) {
+            await saveInvoiceSettings(data.invoiceSettings);
+          }
+
+          // Restore companyLastUsed preference
+          if (data.companyLastUsed && Object.keys(data.companyLastUsed).length > 0) {
+            state.companyLastUsed = { ...state.companyLastUsed, ...data.companyLastUsed };
+            persistState();
+          }
+
+          // Restore analyticsAgg preference
+          if (data.analyticsAgg) {
+            state.analyticsAgg = data.analyticsAgg;
+            persistState();
+          }
+
+          // Restore gbUsername if not already set
+          if (data.gbUsername && !state.gbUsername) {
+            try {
+              const taken = await db.collection('gbUsernames').doc(data.gbUsername).get();
+              if (!taken.exists) {
+                await db.collection('gbUsernames').doc(data.gbUsername).set({ uid: state.user.uid, email: state.user.email });
+                await db.collection('userAccess').doc(state.user.uid).update({ gbUsername: data.gbUsername });
+                state.gbUsername = data.gbUsername;
+              }
+            } catch(e) { console.warn('Username restore skipped:', e); }
           }
 
           endWrite();
