@@ -2199,6 +2199,19 @@
         } else if (state.accessExpiry) {
           const exp = new Date(state.accessExpiry.seconds * 1000);
           const days = Math.ceil((exp - new Date()) / (1000*60*60*24));
+
+          // Treat very large day counts (≥3650 days / 10 years) as unlimited access
+          // This handles the case where unlimited access was granted via a far-future expiry date
+          if (days >= 3650) {
+            statusEl.textContent = 'Active'; statusEl.style.color = '#34d399';
+            daysNumEl.textContent = '∞'; daysNumEl.style.color = '#22d3ee';
+            daysTextEl.textContent = 'Unlimited access'; daysTextEl.style.color = '#34d399';
+            if (barEl) { barEl.style.width = '100%'; barEl.style.background = 'linear-gradient(90deg,#7c3aed,#22d3ee)'; }
+            if (startLabel) startLabel.textContent = '';
+            if (expiryLabel) expiryLabel.textContent = 'No expiry';
+            if (cardEl) { cardEl.style.borderColor = 'rgba(34,211,238,0.25)'; cardEl.style.background = 'linear-gradient(135deg,rgba(34,211,238,0.08),rgba(52,211,153,0.05))'; }
+          } else {
+
           const totalDays = 30; // approximate subscription period for bar
           const pct = Math.max(0, Math.min(100, (days / totalDays) * 100));
 
@@ -2243,6 +2256,7 @@
           const opts = { month:'short', day:'numeric', year:'numeric' };
           if (expiryLabel) expiryLabel.textContent = (days > 0 ? 'Expires: ' : 'Expired: ') + exp.toLocaleDateString('en-US', opts);
           if (startLabel) startLabel.textContent = 'Today';
+          } // end else (non-unlimited days branch)
         } else {
           statusEl.textContent = 'No Subscription'; statusEl.style.color = 'var(--textMuted)';
           daysNumEl.textContent = '—'; daysNumEl.style.color = 'var(--textMuted)';
@@ -3104,7 +3118,20 @@
           <h2 id="companyHeading" style="font-family:'Orbitron',monospace;font-size:18px;color:var(--purpleLight);flex:1">${esc(c.name)}</h2>
           <span class="badge company-header-status ${isActive ? 'badge-green' : 'badge-red'}">${isActive ? 'Active' : 'Inactive'}</span>
           <div class="company-settings-gear ${isActive ? 'gear-active' : 'gear-inactive'}" id="companySettingsGear" title="Company Settings">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+            <svg width="18" height="16" viewBox="0 0 28 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <!-- Game controller body -->
+              <rect x="4" y="9" width="20" height="11" rx="4" stroke="currentColor"/>
+              <!-- Left d-pad: vertical -->
+              <line x1="9" y1="11.5" x2="9" y2="16.5" stroke="currentColor"/>
+              <!-- Left d-pad: horizontal -->
+              <line x1="6.5" y1="14" x2="11.5" y2="14" stroke="currentColor"/>
+              <!-- Right buttons: circle -->
+              <circle cx="19" cy="14" r="1.1" stroke="currentColor"/>
+              <circle cx="21.5" cy="12" r="1.1" stroke="currentColor"/>
+              <!-- Gear badge — top-right corner overlay -->
+              <circle cx="23" cy="4" r="1.5" stroke="currentColor" stroke-width="1.4"/>
+              <path d="M23 1.2v1.1M23 6.5v-1.1M25.5 4h-1.1M20.5 4h1.1M24.9 2.1l-.8.8M21.9 5.1l-.8.8M24.9 5.9l-.8-.8M21.9 2.9l-.8-.8" stroke="currentColor" stroke-width="1.3"/>
+            </svg>
             <span class="gear-text">SETTINGS</span>
           </div>
         </div>
@@ -3180,10 +3207,10 @@
             <div id="convToggle" style="display:inline-flex;align-items:center;gap:0;cursor:pointer;user-select:none">
             <div style="padding:6px 12px;border-radius:6px 0 0 6px;font-family:'Orbitron',monospace;font-size:11px;font-weight:700;line-height:1;
               background:${mode==='pts2dollar'?'var(--cyan)':'var(--bgInput)'};color:${mode==='pts2dollar'?'#000':'var(--textMuted)'};
-              border:1px solid ${mode==='pts2dollar'?'var(--cyan)':'var(--border)'};transition:all 0.2s">PTS<span style="font-size:13px;vertical-align:middle;margin:0 1px">→</span>$</div>
+              border:1px solid ${mode==='pts2dollar'?'var(--cyan)':'var(--border)'};transition:all 0.2s">POINTS</div>
             <div style="padding:6px 12px;border-radius:0 6px 6px 0;font-family:'Orbitron',monospace;font-size:11px;font-weight:700;line-height:1;
               background:${mode==='dollar2pts'?'var(--green)':'var(--bgInput)'};color:${mode==='dollar2pts'?'#000':'var(--textMuted)'};
-              border:1px solid ${mode==='dollar2pts'?'var(--green)':'var(--border)'};border-left:0;transition:all 0.2s">$<span style="font-size:13px;vertical-align:middle;margin:0 1px">→</span>PTS</div>
+              border:1px solid ${mode==='dollar2pts'?'var(--green)':'var(--border)'};border-left:0;transition:all 0.2s">DOLLARS</div>
           </div>
           </div>
         </div>
