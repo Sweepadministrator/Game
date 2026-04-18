@@ -1,6 +1,6 @@
 {
-  "name": "GameBill",
-  "short_name": "GameBill",
+  "name": "SweepAdmin",
+  "short_name": "SweepAdmin",
   "description": "Game Points Billing & Management",
   "start_url": "./",
   "scope": "./",
