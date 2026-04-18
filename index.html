@@ -1088,13 +1088,13 @@
     // FIREBASE INIT
     // ============================================================
     const firebaseConfig = {
-      apiKey: "AIzaSyCEwIp_PNL3BDOvvkLTye_oeWb7pUhpOLI",
-      authDomain: "gamepointsmanager.firebaseapp.com",
-      projectId: "gamepointsmanager",
-      storageBucket: "gamepointsmanager.firebasestorage.app",
-      messagingSenderId: "595148736817",
-      appId: "1:595148736817:web:67021052d5ddf9c6ba4810",
-      measurementId: "G-H9X31K7NYP"
+      apiKey: "AIzaSyDjrOg8Q0sIXI6Jo5f4DT2x-kv9rkbaMx0",
+      authDomain: "auth.sweepadmin.com",
+      projectId: "sweepadministrator",
+      storageBucket: "sweepadministrator.firebasestorage.app",
+      messagingSenderId: "909535669253",
+      appId: "1:909535669253:web:8389b6274f269178c3806c",
+      measurementId: "G-0LMKKJRY4X"
     };
 
     firebase.initializeApp(firebaseConfig);
@@ -1124,6 +1124,7 @@
       view: _persisted.view === 'company' || _persisted.view === 'analytics' || _persisted.view === 'globalAnalytics' ? 'loading' : 'loading',
       accessDaysLeft: 0,
       accessExpiry: null,
+      accessUnlimited: false,
       gbUsername: '',
       companies: {},
       masterGames: [],
@@ -1720,7 +1721,14 @@
       let statusBlock = '';
       let noticeBlock = '';
 
-      if (daysLeft > 0) {
+      if (state.accessUnlimited) {
+        statusBlock = `
+          <div style="margin-bottom:6px">
+            <div style="font-family:'Orbitron',monospace;font-size:38px;color:#22d3ee;line-height:1">∞</div>
+            <div style="font-size:13px;color:#34d399;font-weight:600;margin-top:4px">Unlimited Access</div>
+          </div>
+          <div style="font-size:12px;color:var(--textMuted)">No expiry date</div>`;
+      } else if (daysLeft > 0) {
         // User has access but it's expiring — they shouldn't normally land here,
         // but if days <= 3 and we want to warn, show remaining time
         const barColor = daysLeft <= 3 ? 'var(--orange)' : 'var(--green)';
@@ -2180,6 +2188,14 @@
           if (startLabel) startLabel.textContent = '';
           if (expiryLabel) expiryLabel.textContent = 'No expiry';
           if (cardEl) { cardEl.style.borderColor = 'rgba(124,58,237,0.25)'; cardEl.style.background = 'linear-gradient(135deg,rgba(124,58,237,0.08),rgba(34,211,238,0.05))'; }
+        } else if (state.accessUnlimited) {
+          statusEl.textContent = 'Active'; statusEl.style.color = '#34d399';
+          daysNumEl.textContent = '∞'; daysNumEl.style.color = '#22d3ee';
+          daysTextEl.textContent = 'Unlimited access'; daysTextEl.style.color = '#34d399';
+          if (barEl) { barEl.style.width = '100%'; barEl.style.background = 'linear-gradient(90deg,#7c3aed,#22d3ee)'; }
+          if (startLabel) startLabel.textContent = '';
+          if (expiryLabel) expiryLabel.textContent = 'No expiry';
+          if (cardEl) { cardEl.style.borderColor = 'rgba(34,211,238,0.25)'; cardEl.style.background = 'linear-gradient(135deg,rgba(34,211,238,0.08),rgba(52,211,153,0.05))'; }
         } else if (state.accessExpiry) {
           const exp = new Date(state.accessExpiry.seconds * 1000);
           const days = Math.ceil((exp - new Date()) / (1000*60*60*24));
@@ -2305,16 +2321,7 @@
     }
 
     async function doExport() {
-      const invoiceSettings = getInvoiceSettings();
-      const data = {
-        masterGames: state.masterGames,
-        companies: state.companies,
-        bills: state.bills,
-        gbUsername: state.gbUsername || '',
-        companyLastUsed: state.companyLastUsed || {},
-        analyticsAgg: state.analyticsAgg || 'D',
-        invoiceSettings: invoiceSettings || {}
-      };
+      const data = { masterGames: state.masterGames, companies: state.companies, bills: state.bills };
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
@@ -2414,35 +2421,6 @@
                 await db.collection(`${userPath()}/bills`).add(billRest);
               }
             }
-          }
-
-          // Restore invoice settings
-          if (data.invoiceSettings && Object.keys(data.invoiceSettings).length > 0) {
-            await saveInvoiceSettings(data.invoiceSettings);
-          }
-
-          // Restore companyLastUsed preference
-          if (data.companyLastUsed && Object.keys(data.companyLastUsed).length > 0) {
-            state.companyLastUsed = { ...state.companyLastUsed, ...data.companyLastUsed };
-            persistState();
-          }
-
-          // Restore analyticsAgg preference
-          if (data.analyticsAgg) {
-            state.analyticsAgg = data.analyticsAgg;
-            persistState();
-          }
-
-          // Restore gbUsername if not already set
-          if (data.gbUsername && !state.gbUsername) {
-            try {
-              const taken = await db.collection('gbUsernames').doc(data.gbUsername).get();
-              if (!taken.exists) {
-                await db.collection('gbUsernames').doc(data.gbUsername).set({ uid: state.user.uid, email: state.user.email });
-                await db.collection('userAccess').doc(state.user.uid).update({ gbUsername: data.gbUsername });
-                state.gbUsername = data.gbUsername;
-              }
-            } catch(e) { console.warn('Username restore skipped:', e); }
           }
 
           endWrite();
@@ -4667,14 +4645,12 @@
         const calc = calcLine(item);
         totalPts += safeNum(calc.points); totalDollars += safeNum(calc.dollars);
         const costRate = safeNum(getCostRate(item.gameName));
-        const sellRate = safeNum(getGameRate(c, item.gameName) || 0);
         return {
           gameName: item.gameName || '',
           gameId: item.gameId || '',
           username: item.username || '',
           value: safeNum(parseFloat(item.value)),
           costRate: costRate,
-          sellRate: sellRate,
           points: safeNum(calc.points),
           dollars: safeNum(calc.dollars),
           inputAmount: safeNum(calc.inputAmount),
@@ -5220,8 +5196,7 @@
           var it=bill.items[ii],pts=it.points||0,dol=Math.abs(it.dollars||0);
           if(pts===0&&dol===0)continue;
           var absPts=Math.abs(pts);
-          var sR=(it.sellRate!=null?it.sellRate:null);if(sR===null)sR=getGameRate(c,it.gameName)||0;
-          var cR=(it.costRate!=null?it.costRate:null);if(cR===null)cR=getCostRate(it.gameName);
+          var sR=getGameRate(c,it.gameName)||0,cR=getCostRate(it.gameName);
           var sp=absPts*(sR/100),cp=absPts*(cR/100),lvl=getUserLevel(c,it.username,it.gameName);
           var det={date:bill.date,gameName:it.gameName,username:it.username,points:absPts,dollars:dol,level:lvl,rawPoints:pts,sellRate:sR,costRate:cR,profit:sp-cp};
           // SIGN of points determines: positive = LOAD, negative = REDEEM
@@ -6871,7 +6846,7 @@
     // ============================================================
     // AUTH STATE LISTENER (with access control)
     // ============================================================
-    const ADMIN_EMAIL = 'companydata.details@gmail.com';
+    const ADMIN_EMAIL = 'service@sweepadmin.com';
 
     async function checkUserAccess(user) {
       // Admin always has access
@@ -6903,16 +6878,18 @@
           photoURL: user.photoURL || '',
         });
 
-        if (data.isDisabled) return { hasAccess: false, daysLeft: 0, expiry: data.expiryDate, gbUsername: data.gbUsername || '' };
+        if (data.isDisabled) return { hasAccess: false, daysLeft: 0, expiry: data.expiryDate, gbUsername: data.gbUsername || '', isUnlimited: false };
 
-        if (!data.expiryDate) return { hasAccess: false, daysLeft: 0, expiry: null, gbUsername: data.gbUsername || '' };
+        if (data.isUnlimited) return { hasAccess: true, daysLeft: 0, expiry: null, gbUsername: data.gbUsername || '', isUnlimited: true };
+
+        if (!data.expiryDate) return { hasAccess: false, daysLeft: 0, expiry: null, gbUsername: data.gbUsername || '', isUnlimited: false };
 
         const now = new Date();
         const expiry = data.expiryDate.toDate();
         const diffMs = expiry - now;
         const daysLeft = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
 
-        return { hasAccess: daysLeft > 0, daysLeft: Math.max(0, daysLeft), expiry: data.expiryDate, gbUsername: data.gbUsername || '' };
+        return { hasAccess: daysLeft > 0, daysLeft: Math.max(0, daysLeft), expiry: data.expiryDate, gbUsername: data.gbUsername || '', isUnlimited: false };
       } catch (e) {
         console.error('Access check error:', e);
         return { hasAccess: false, daysLeft: 0, expiry: null, gbUsername: '' };
@@ -6935,6 +6912,7 @@
         state.gbUsername = access.gbUsername || '';
         state.accessDaysLeft = access.daysLeft;
         state.accessExpiry = access.expiry;
+        state.accessUnlimited = access.isUnlimited || false;
         if (!access.hasAccess) {
           state.view = 'accessDenied';
           render();
