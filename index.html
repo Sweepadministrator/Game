@@ -943,6 +943,7 @@
     }
     @media (max-width:600px) {
       .emp-stat-grid { grid-template-columns:repeat(2,1fr); }
+      .cashier-stat-grid { grid-template-columns:repeat(2,1fr) !important; }
       .emp-card { padding:14px 14px 14px 18px; }
     }
     /* ============================================================ */
@@ -8739,7 +8740,7 @@
       const dateStr = fromDate.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' – ' + toDate.toLocaleDateString('en-US',{month:'short',day:'numeric'});
 
       wrap.innerHTML = `
-        <div class="emp-stat-grid" style="grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
+        <div class="emp-stat-grid cashier-stat-grid" style="grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
           <div class="emp-stat sclr-0 clickable" id="dashTotalCard">
             <div class="es-label">Total Cashiers</div>
             <div class="es-value">${cashiers.filter(e=>e.active!==false).length}</div>
